@@ -1,0 +1,1 @@
+{"id": "doc_001", "text": "Retrieval-Augmented Generation (RAG) is a technique that combines information retrieval with language model generation. It first retrieves relevant documents from a corpus, then uses them as context for the language model to generate accurate answers."}
