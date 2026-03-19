@@ -17,13 +17,13 @@ class QwenRAGGenerator:
 
     def format_context(self, retrieved_docs, collection):
         """Format retrieved docs into a context string for the prompt."""
+        doc_map = {doc["id"]: doc["text"] for doc in collection}
         context_parts = []
         for doc_id, score in retrieved_docs:
-            doc_text = next((doc["text"] for doc in collection if doc["id"] == doc_id), "")
+            doc_text = doc_map.get(doc_id, "")
             if len(doc_text) > 800:
                 doc_text = doc_text[:800] + "..."
             context_parts.append(f"Document {doc_id}: {doc_text}")
-
         return "\n\n".join(context_parts)
 
     def generate_answer(self, question, context, max_new_tokens=512):
@@ -61,6 +61,14 @@ Please answer based on the context. If the answer is not in the context, say so.
 
         response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
+        # Qwen3 wraps internal reasoning in <think>...</think> — capture and strip it
+        self.last_thinking = ""
+        if "<think>" in response and "</think>" in response:
+            start = response.find("<think>") + len("<think>")
+            end = response.rfind("</think>")
+            self.last_thinking = response[start:end].strip()
+            response = response[end + len("</think>"):].strip()
+
         return response.strip()
 
 class AgenticRAGSystem:
@@ -70,23 +78,8 @@ class AgenticRAGSystem:
         self.collection = collection
         self.retriever = retriever
         self.generator = generator
+        self.generator.last_thinking = ""
         print("Agentic RAG system initialized")
-
-    def _plan_query(self, question):
-        """Generate a retrieval plan and rewrite the query."""
-        planning_prompt = f"""Analyze the following question and create a retrieval plan:
-
-Question: {question}
-
-Please break down the question into key information needs and suggest search strategies.
-Format your response as:
-1. Key entities: [list main entities]
-2. Information needs: [list what information is needed]
-3. Search strategy: [how to approach retrieval]
-4. Rewritten queries: [1-3 alternative query formulations]"""
-
-        plan = self.generator.generate_answer(planning_prompt, "", max_new_tokens=300)
-        return plan
 
     def _decompose_complex_query(self, question):
         """Break a complex question into simpler sub-queries."""
@@ -138,10 +131,10 @@ Answer:"""
 
     def _self_check_answer(self, question, answer, retrieved_docs, collection):
         """Verify the answer is grounded in the retrieved evidence."""
+        doc_map = {doc["id"]: doc["text"] for doc in collection}
         evidence_context = ""
         for doc_id in retrieved_docs[:3]:
-            doc_text = next((doc["text"] for doc in collection if doc["id"] == doc_id), "")
-            evidence_context += f"Document {doc_id}: {doc_text}\n\n"
+            evidence_context += f"Document {doc_id}: {doc_map.get(doc_id, '')}\n\n"
 
         verification_prompt = f"""Verify if the following answer is supported by the evidence:
 
@@ -183,9 +176,6 @@ Please provide an improved answer that addresses the verification concerns:"""
         """Run the full agentic query workflow."""
 
         if enable_planning:
-            print("Planning query...")
-            query_plan = self._plan_query(question)
-
             sub_queries = self._decompose_complex_query(question)
             print(f"Sub-queries: {sub_queries}")
 
@@ -193,12 +183,13 @@ Please provide an improved answer that addresses the verification concerns:"""
                 print("Performing parallel retrieval...")
                 all_retrieval_results = self._parallel_retrieval(sub_queries, k=2)
 
-                all_docs = set()
+                best_scores = {}
                 for query_results in all_retrieval_results.values():
                     for doc_id, score in query_results:
-                        all_docs.add((doc_id, score))
+                        if doc_id not in best_scores or score > best_scores[doc_id]:
+                            best_scores[doc_id] = score
 
-                retrieved_docs = sorted(list(all_docs), key=lambda x: x[1], reverse=True)[:k]
+                retrieved_docs = sorted(best_scores.items(), key=lambda x: x[1], reverse=True)[:k]
                 print(f"Merged retrieval results: {len(retrieved_docs)} documents")
             else:
                 retrieved_docs = self.retriever.retrieve(question, k)
@@ -239,6 +230,5 @@ Please provide an improved answer that addresses the verification concerns:"""
             "verification_passed": verification_passed,
             "verification_feedback": verification_feedback,
             "sub_queries": sub_queries if enable_planning else [],
-            "query_plan": query_plan if enable_planning else "Planning disabled"
         }
 

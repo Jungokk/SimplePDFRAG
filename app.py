@@ -271,7 +271,7 @@ else:
     st.session_state.messages = []
 
 # ── System initialization ─────────────────
-COLAB_PATH = "/content/drive/MyDrive/Colab Notebooks/corpus.jsonl"
+COLAB_PATH = "/content/drive/MyDrive/Colab Notebooks/DSAI5201/corpus.jsonl"
 LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus.jsonl")
 CORPUS_PATH = COLAB_PATH if os.path.exists("/content") else LOCAL_PATH
 
@@ -324,28 +324,23 @@ if prompt := st.chat_input("Ask a complex question..."):
         thought_buffer = ""
 
         try:
-            # Step 1: Planning
-            status.write("🧠 **Step 1: Planning Query Strategy...**")
-            plan = agent_system._plan_query(prompt)
-            status.markdown(f"> *Plan Generated:*\n\n{plan}")
-            thought_buffer += f"### 🧠 Planning\n{plan}\n\n"
-            time.sleep(0.5)
-
-            # Step 2: Decomposition
-            status.write("📝 **Step 2: Decomposing Question...**")
+            # Step 1: Decomposition
+            status.write("📝 **Step 1: Decomposing Question...**")
             sub_queries = agent_system._decompose_complex_query(prompt)
             status.markdown(f"> *Sub-queries:* `{sub_queries}`")
             thought_buffer += f"### 📝 Decomposition\nSub-queries: {sub_queries}\n\n"
 
-            # Step 3: Retrieval
-            status.write(f"🔍 **Step 3: Searching Evidence for {len(sub_queries)} queries...**")
+            # Step 2: Retrieval
+            status.write(f"🔍 **Step 2: Searching Evidence for {len(sub_queries)} queries...**")
 
             if len(sub_queries) > 1:
                 raw_results = agent_system._parallel_retrieval(sub_queries, k=2)
-                all_docs = set()
+                best_scores = {}
                 for q_res in raw_results.values():
-                    for doc_id, score in q_res: all_docs.add((doc_id, score))
-                retrieved_items = sorted(list(all_docs), key=lambda x: x[1], reverse=True)[:5]
+                    for doc_id, score in q_res:
+                        if doc_id not in best_scores or score > best_scores[doc_id]:
+                            best_scores[doc_id] = score
+                retrieved_items = sorted(best_scores.items(), key=lambda x: x[1], reverse=True)[:5]
             else:
                 retrieved_items = agent_system.retriever.retrieve(prompt, k=3)
 
@@ -364,10 +359,10 @@ if prompt := st.chat_input("Ask a complex question..."):
             status.markdown(cards_html, unsafe_allow_html=True)
             thought_buffer += f"### 🔍 Retrieval\nRetrieved {len(retrieved_items)} documents.\n\n"
 
-            # Step 4: Reasoning & verification
-            status.write("💡 **Step 4: Reasoning & Verification...**")
+            # Step 3: Reasoning & verification
+            status.write("💡 **Step 3: Reasoning & Verification...**")
             context = agent_system.generator.format_context(retrieved_items, doc_collection)
-            final_answer = agent_system.generator.generate_answer(prompt, context)
+            final_answer = agent_system._generate_with_reasoning(prompt, context)
 
             passed, feedback = agent_system._self_check_answer(prompt, final_answer, [d[0] for d in retrieved_items], doc_collection)
             if passed:
@@ -380,6 +375,12 @@ if prompt := st.chat_input("Ask a complex question..."):
                 thought_buffer += f"### 🔧 Refinement\nTriggered by: {feedback}\n"
 
             status.update(label="Reasoning Complete", state="complete", expanded=False)
+
+            # Show model's internal thinking as collapsible expander
+            if agent_system.generator.last_thinking:
+                with st.expander("🧠 Model Thinking", expanded=False):
+                    st.markdown(agent_system.generator.last_thinking)
+                thought_buffer += f"### 🧠 Model Thinking\n{agent_system.generator.last_thinking}\n\n"
 
             # Stream final answer
             container = st.empty()
