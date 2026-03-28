@@ -344,17 +344,19 @@ if prompt := st.chat_input("Ask a complex question..."):
             else:
                 retrieved_items = agent_system.retriever.retrieve(prompt, k=3)
 
-            cards_html = ""
+            # build HTML using the CSS classes defined above so styling applies
+            cards_html = "<div class='card-container'>"
             for d in retrieved_items:
-                txt = next((i['text'] for i in doc_collection if i['id'] == d[0]), "")[:80]
+                txt = next((i['text'] for i in doc_collection if i['id'] == d[0]), "")[:200]
                 card = f"""
                 <div class="rag-card">
-                    <span class="score-tag">{d[1]:.2f}</span>
-                    <strong>{d[0]}</strong><br>
-                    <span style="color:#888">{txt}...</span>
+                    <div class="card-header"><span class="match-score">{d[1]:.2f}</span></div>
+                    <div class="card-title">{d[0]}</div>
+                    <div class="card-content">{txt}...</div>
                 </div>
                 """
                 cards_html += card
+            cards_html += "</div>"
 
             status.markdown(cards_html, unsafe_allow_html=True)
             thought_buffer += f"### 🔍 Retrieval\nRetrieved {len(retrieved_items)} documents.\n\n"

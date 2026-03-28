@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict, Any
 from collections import defaultdict
 from tqdm import tqdm
 from rank_bm25 import BM25Okapi
-from nltk.tokenize import word_tokenize
+from nltk.tokenize import word_tokenize, sent_tokenize
 from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
 
@@ -25,8 +25,37 @@ except LookupError:
     nltk.download('punkt_tab')
 
 
-def load_pdf_chunks(pdf_paths: List[str], chunk_size: int = 500) -> List[Dict]:
-    """Extract text from PDFs and split into chunks formatted as collection docs."""
+def load_pdf_chunks(
+    pdf_paths: List[str],
+    chunk_size_tokens: int = 256,
+    overlap_tokens: int = 50,
+    tokenizer: Any = None,
+    tokenizer_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+) -> List[Dict]:
+    """Extract text from PDFs and split into token-aware chunks.
+
+    Args:
+        pdf_paths: list of PDF file paths.
+        chunk_size_tokens: target chunk size in tokens.
+        overlap_tokens: number of tokens to overlap between adjacent chunks.
+        tokenizer: optional HuggingFace tokenizer instance. If None, one is
+            created from `tokenizer_model`.
+        tokenizer_model: model id used to create a tokenizer when `tokenizer`
+            is not provided.
+
+    The function tokenizes sentences and builds chunks by concatenating
+    sentences until the token count reaches `chunk_size_tokens`. The window
+    then slides back by approximately `overlap_tokens` (measured in tokens)
+    to create overlap. This preserves sentence boundaries while remaining
+    token-budget aware for embedding models and LLMs.
+    """
+    # lazily import tokenizer if not passed
+    if tokenizer is None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, use_fast=True)
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
+
     collection = []
     doc_index = 0
     for pdf_path in pdf_paths:
@@ -35,18 +64,53 @@ def load_pdf_chunks(pdf_paths: List[str], chunk_size: int = 500) -> List[Dict]:
         except Exception as e:
             print(f"Could not open {pdf_path}: {e}")
             continue
+
         for page_num, page in enumerate(doc):
-            text = page.get_text()
-            for i in range(0, len(text), chunk_size):
-                chunk = text[i:i + chunk_size].strip()
+            text = page.get_text().strip()
+            if not text:
+                continue
+
+            sentences = sent_tokenize(text)
+            # precompute token lengths of sentences for efficiency
+            sent_toks = [len(tokenizer.encode(s, add_special_tokens=False)) for s in sentences]
+
+            i = 0
+            while i < len(sentences):
+                toks = 0
+                j = i
+                # add sentences until we reach chunk token budget
+                while j < len(sentences) and (toks + sent_toks[j] <= chunk_size_tokens or j == i):
+                    toks += sent_toks[j]
+                    j += 1
+
+                chunk = " ".join(sentences[i:j]).strip()
                 if chunk:
                     collection.append({
                         "id": f"pdf_{doc_index}",
                         "text": chunk,
                         "source": pdf_path,
-                        "page": page_num + 1
+                        "page": page_num + 1,
                     })
                     doc_index += 1
+
+                # slide window back by overlap_tokens measured in sentence steps
+                if overlap_tokens <= 0:
+                    i = j
+                    continue
+
+                # find new start index such that tokens in sentences[new_i:j] <= overlap_tokens
+                new_i = j
+                overlap_count = 0
+                while new_i > i and overlap_count < overlap_tokens:
+                    new_i -= 1
+                    overlap_count += sent_toks[new_i]
+
+                # ensure forward progress
+                if new_i <= i:
+                    i = i + 1
+                else:
+                    i = new_i
+
     return collection
 
 
