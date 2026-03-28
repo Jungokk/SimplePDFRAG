@@ -345,16 +345,34 @@ if prompt := st.chat_input("Ask a complex question..."):
                 retrieved_items = agent_system.retriever.retrieve(prompt, k=3)
 
             # build HTML using the CSS classes defined above so styling applies
+            # if no documents retrieved, return a safe canned response
+            if not retrieved_items:
+                status.write("🔎 No documents found for your query.")
+                no_answer = "I don't know — no relevant documents were found in the indexed corpus to support an answer."
+                container = st.empty()
+                container.markdown(f"**Answer:** {no_answer}")
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": no_answer,
+                    "thoughts": thought_buffer,
+                    "timestamp": datetime.now().isoformat()
+                })
+                all_histories[current_id] = st.session_state.messages
+                save_history(all_histories)
+                st.rerun()
+
+            import html as _html
             cards_html = "<div class='card-container'>"
             for d in retrieved_items:
-                txt = next((i['text'] for i in doc_collection if i['id'] == d[0]), "")[:200]
-                card = f"""
-                <div class="rag-card">
-                    <div class="card-header"><span class="match-score">{d[1]:.2f}</span></div>
-                    <div class="card-title">{d[0]}</div>
-                    <div class="card-content">{txt}...</div>
-                </div>
-                """
+                raw_txt = next((i['text'] for i in doc_collection if i['id'] == d[0]), "")[:200]
+                txt = _html.escape(raw_txt)
+                card = (
+                    f"<div class=\"rag-card\">"
+                    f"<div class=\"card-header\"><span class=\"match-score\">{d[1]:.2f}</span></div>"
+                    f"<div class=\"card-title\">{d[0]}</div>"
+                    f"<div class=\"card-content\">{txt}...</div>"
+                    f"</div>"
+                )
                 cards_html += card
             cards_html += "</div>"
 
