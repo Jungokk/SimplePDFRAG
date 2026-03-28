@@ -222,6 +222,18 @@ with st.sidebar:
 
     st.divider()
 
+    # Generator model selector
+    st.markdown("### ⚙️ Generator Model")
+    if "generator_model" not in st.session_state:
+        st.session_state.generator_model = "Qwen/Qwen3-0.6B"
+    st.selectbox(
+        "Generator model",
+        ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-4B"],
+        index=0 if st.session_state.generator_model == "Qwen/Qwen3-0.6B" else 1,
+        key="generator_model",
+        help="Select the Qwen model used for generation (larger models are slower but stronger).",
+    )
+
     st.markdown("### 📂 PDF Knowledge Base")
     uploaded_pdfs = st.file_uploader(
         "Upload PDF files", type="pdf",
@@ -276,20 +288,30 @@ LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus.js
 CORPUS_PATH = COLAB_PATH if os.path.exists("/content") else LOCAL_PATH
 
 @st.cache_resource
-def initialize_system():
-    if not os.path.exists(CORPUS_PATH): return None, []
+def load_corpus_and_retriever():
+    """Load corpus + BM25 retriever once. Never re-runs when generator model changes."""
+    if not os.path.exists(CORPUS_PATH):
+        return [], None
     collection = []
     with open(CORPUS_PATH, 'r', encoding='utf-8') as f:
         for line in f:
             try: collection.append(json.loads(line))
             except: continue
     retriever = BM25Retriever(collection)
-    generator = QwenRAGGenerator(model_name="Qwen/Qwen3-0.6B")
-    rag_system = AgenticRAGSystem(collection, retriever, generator)
-    return rag_system, collection
+    return collection, retriever
+
+@st.cache_resource
+def load_generator(model_name: str = "Qwen/Qwen3-0.6B"):
+    """Load only the generator model — keyed per model_name."""
+    return QwenRAGGenerator(model_name=model_name)
 
 try:
-    agent_system, doc_collection = initialize_system()
+    doc_collection, _retriever = load_corpus_and_retriever()
+    _generator = load_generator(st.session_state.get("generator_model", "Qwen/Qwen3-0.6B"))
+    if _retriever is None:
+        agent_system = None
+    else:
+        agent_system = AgenticRAGSystem(doc_collection, _retriever, _generator)
 except Exception as e:
     st.error(f"System initialization failed: {e}")
     st.stop()
@@ -408,7 +430,6 @@ if prompt := st.chat_input("Ask a complex question..."):
             for char in final_answer:
                 stream_out += char
                 container.markdown(stream_out + "▌")
-                time.sleep(0.005)
             container.markdown(stream_out)
 
             st.session_state.messages.append({

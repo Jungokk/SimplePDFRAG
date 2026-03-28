@@ -43,7 +43,8 @@ Please answer based on the context. If the answer is not in the context, say so.
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
+            enable_thinking=False,  # disable Qwen3 <think> blocks to save tokens
         )
 
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
@@ -51,8 +52,8 @@ Please answer based on the context. If the answer is not in the context, say so.
         generated_ids = self.model.generate(
             **model_inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7
+            do_sample=False,
+            num_beams=1,
         )
 
         generated_ids = [
@@ -61,13 +62,20 @@ Please answer based on the context. If the answer is not in the context, say so.
 
         response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-        # Qwen3 wraps internal reasoning in <think>...</think> — capture and strip it
+        # Qwen3 wraps internal reasoning in <think>...</think> — capture and strip it.
+        # If max_new_tokens truncates before </think>, strip the unclosed block too.
         self.last_thinking = ""
-        if "<think>" in response and "</think>" in response:
-            start = response.find("<think>") + len("<think>")
-            end = response.rfind("</think>")
-            self.last_thinking = response[start:end].strip()
-            response = response[end + len("</think>"):].strip()
+        if "<think>" in response:
+            if "</think>" in response:
+                start = response.find("<think>") + len("<think>")
+                end = response.rfind("</think>")
+                self.last_thinking = response[start:end].strip()
+                response = response[end + len("</think>"):].strip()
+            else:
+                # truncated: everything from <think> onward is incomplete reasoning
+                start = response.find("<think>")
+                self.last_thinking = response[start + len("<think>"):].strip()
+                response = response[:start].strip()
 
         return response.strip()
 
@@ -90,7 +98,7 @@ Original question: {question}
 Provide 2-3 simpler questions that together would help answer the original question.
 Format each sub-question on a new line starting with "-"."""
 
-        decomposition = self.generator.generate_answer(decomposition_prompt, "", max_new_tokens=400)
+        decomposition = self.generator.generate_answer(decomposition_prompt, "", max_new_tokens=100)
 
         sub_questions = []
         for line in decomposition.split('\n'):
@@ -169,7 +177,7 @@ Context: {context}
 
 Please provide an improved answer that addresses the verification concerns:"""
 
-        refined_answer = self.generator.generate_answer(reflection_prompt, "", max_new_tokens=500)
+        refined_answer = self.generator.generate_answer(reflection_prompt, "", max_new_tokens=1000)
         return refined_answer
 
     def query(self, question, k=5, enable_planning=True, enable_self_check=True):
